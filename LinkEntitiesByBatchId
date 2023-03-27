@@ -1,0 +1,84 @@
+using Stylelabs.M.Base.Querying;
+using Stylelabs.M.Base.Querying.Linq;
+using Stylelabs.M.Framework.Essentials.LoadOptions;
+using Stylelabs.M.Sdk.Contracts.Base;
+using Stylelabs.M.Sdk.Contracts.Querying;
+using System.Globalization;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
+
+MClient.Logger.Info("Getting Entities");
+
+int totalMappedProducts = default;
+int totalSkipped = default;
+int total = default;
+
+CultureInfo defaultCulture = await MClient.Cultures.GetDefaultCultureAsync();
+
+var query = Query.CreateQuery(entities => from e in entities
+                                            where e.DefinitionName == "definitionName"
+                                            && e.Property("BatchId") == "batch1" // Remove this line if you want to run it on all entities of the definition
+                                            select e);
+
+var result = await MClient.Querying.QueryIdsAsync(query);
+long totalNumberInCH = result.TotalNumberOfResults;
+MClient.Logger.Info($"Total Number of  entities - {totalNumberInCH}");
+
+IIdIterator iterator = MClient.Querying.CreateEntityIdIterator(query);
+while (await iterator.MoveNextAsync())
+{
+    var entities = iterator.Current.Items;
+    foreach (var item in entities)
+    {
+        ++total;
+        var entity = await MClient.Entities.GetAsync(item);
+        if(entity == null)
+        {
+            MClient.Logger.Info($"Entity {item} not found.");
+            continue; 
+        }
+
+        MClient.Logger.Info($"Processing {entity.Identifier} - {entity.Id} . Total processed - {total}. Total in CH - {totalNumberInCH}.");
+
+        #region Load Options
+
+        var propertyLoadOption = new PropertyLoadOption("Catalog", "ProductName");
+        var relationLoadOption = new RelationLoadOption("Products");
+
+        var isLoaded = await entity.LoadMembersAsync(propertyLoadOption, relationLoadOption);
+        if (!isLoaded)
+            continue;
+
+        #endregion
+
+        var relation = entity.GetRelation("Products", RelationRole.Parent);
+        var productName = entity.GetPropertyValue("ProductName");
+        MClient.Logger.Info(productName.ToString());
+        var productId = await GetProductId(productName.ToString().Trim());
+        if (!productId.HasValue)
+        {
+            MClient.Logger.Info($"Product {productName} was not found in CH");
+            continue;
+        }
+
+        relation.SetIds(new List<long> { productId.Value });
+        var id = await MClient.Entities.SaveAsync(entity);
+        MClient.Logger.Info($"Relation [{productId}] added to {entity.DefinitionName} | {entity.Id}");
+        MClient.Logger.Info(productName.ToString());
+    }
+}
+
+async Task<long?> GetProductId(string product)
+{
+    MClient.Logger.Info($"Getting Product - {product}");
+    var query = Query.CreateQuery(entities =>
+        from e in entities
+        where e.Property("ProductName") == product
+        && e.DefinitionName == "M.PCM.Product"
+        select e);
+    var productId = await MClient.Querying.SingleIdAsync(query);
+    MClient.Logger.Info($"Product {product} found. Id - {productId}");
+
+    return productId;
+}
